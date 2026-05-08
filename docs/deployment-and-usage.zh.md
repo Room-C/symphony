@@ -430,6 +430,52 @@ sudo journalctl -u symphony -f
 
 适合个人开发机长期运行。示例路径需要按你的机器替换成绝对路径。
 
+如果你要在本机同时监听 `PactPilot`、`PactPilot-Backend`、`PactPilot-OfficialSite` 三个项目，推荐直接使用仓库内的一键部署脚本。它会构建 release 二进制、为三个 workflow 生成 launchd plist，并加载服务：
+
+```bash
+cd /Users/bob/Work/MyProject/PactPilot/symphony
+
+scripts/deploy-local-launchd.sh check
+scripts/deploy-local-launchd.sh install --sync-labels
+scripts/deploy-local-launchd.sh status
+```
+
+脚本会安装这三个 launchd 服务：
+
+```text
+com.roomc.symphony.pactpilot     -> WORKFLOW.pactpilot.md     -> 127.0.0.1:8724
+com.roomc.symphony.backend       -> WORKFLOW.backend.md       -> 127.0.0.1:8725
+com.roomc.symphony.officialsite  -> WORKFLOW.officialsite.md  -> 127.0.0.1:8726
+```
+
+常用管理命令：
+
+```bash
+scripts/deploy-local-launchd.sh start
+scripts/deploy-local-launchd.sh stop
+scripts/deploy-local-launchd.sh restart
+scripts/deploy-local-launchd.sh status
+scripts/deploy-local-launchd.sh logs
+scripts/deploy-local-launchd.sh uninstall
+```
+
+`--sync-labels` 会在三个目标仓库中创建或更新 Symphony 需要的状态 label 和优先级 label。这个动作会修改 GitHub 仓库元数据；如果你只想安装本机服务，可以先运行：
+
+```bash
+scripts/deploy-local-launchd.sh install
+```
+
+启动脚本不会把 token 写进 plist。每次服务启动时，它会通过 `gh auth token` 动态读取 token，并导出 `GITHUB_TOKEN` 和 `GH_TOKEN`。如果你需要配置代理或自定义 `gh` 路径，可以创建：
+
+```bash
+mkdir -p ~/.config/symphony
+cat > ~/.config/symphony/env <<'EOF'
+HTTPS_PROXY=http://127.0.0.1:7890
+HTTP_PROXY=http://127.0.0.1:7890
+SYMPHONY_GH=/opt/homebrew/bin/gh
+EOF
+```
+
 `~/Library/LaunchAgents/com.roomc.symphony.plist`：
 
 ```xml
