@@ -18,6 +18,9 @@ Check configuration without starting the daemon:
 cargo run -- check --workflow WORKFLOW.md
 ```
 
+Detailed deployment and day-to-day usage guidance is in
+[`docs/deployment-and-usage.zh.md`](docs/deployment-and-usage.zh.md).
+
 Status surfaces:
 
 - `GET /health`
