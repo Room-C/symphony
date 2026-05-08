@@ -1,0 +1,11 @@
+Room-C Symphony
+Copyright 2026 Room-C contributors
+
+This product includes a Rust implementation of concepts described by the OpenAI Symphony
+Service Specification.
+
+Upstream project:
+  https://github.com/openai/symphony
+
+The upstream Symphony specification and reference implementation are published under the
+Apache License, Version 2.0.
