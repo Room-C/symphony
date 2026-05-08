@@ -3,14 +3,16 @@ pub mod codex_protocol;
 pub mod tools;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
 use crate::Result;
 use crate::config::CodexConfig;
 use crate::events::{Issue, RuntimeEvent};
+use crate::tracker::Tracker;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentRunRequest {
     pub issue: Issue,
     pub workspace_path: PathBuf,
@@ -19,6 +21,7 @@ pub struct AgentRunRequest {
     pub attempt: Option<u32>,
     pub max_turns: u32,
     pub codex: CodexConfig,
+    pub tracker: Option<Arc<dyn Tracker>>,
 }
 
 #[derive(Debug, Clone, Default)]

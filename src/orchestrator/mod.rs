@@ -118,6 +118,10 @@ impl Orchestrator {
                 return Ok(());
             }
         };
+        debug!(
+            candidate_count = candidates.len(),
+            "candidate issue fetch completed"
+        );
         sort_for_dispatch(&mut candidates);
         let guard = self.state.read().await;
         let eligible = dispatch::eligible_issues(&guard, &workflow.config, candidates);
@@ -220,6 +224,7 @@ impl Orchestrator {
                 },
             );
         }
+        info!(issue_id = %issue.id, issue = %issue.identifier, "dispatching issue");
 
         let state = self.state.clone();
         let tracker = self.tracker.clone();
@@ -275,6 +280,7 @@ async fn run_worker_attempt(
         attempt,
         max_turns: workflow.config.agent.max_turns,
         codex: workflow.config.codex.clone(),
+        tracker: Some(tracker.clone()),
     };
     let outcome = agent.run(request, events).await;
     manager.after_run_best_effort(&workspace).await;

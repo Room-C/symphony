@@ -28,4 +28,11 @@ Writes supported in labels mode:
 
 Candidate fetch uses GitHub GraphQL organization Projects v2 data and maps the configured single-select status field to Symphony state.
 
-Read support is implemented for v0.1. Writes are intentionally rejected with `unsupported_tracker_write` until project item field mutation lookup is implemented.
+Writes supported in Projects v2 mode:
+
+- `set_state` through `updateProjectV2ItemFieldValue`
+- `comment` through issue REST comments
+- `close` through issue REST state update
+- `link_pr` as a comment
+
+The project must expose a single-select status field whose option names match requested Symphony states.

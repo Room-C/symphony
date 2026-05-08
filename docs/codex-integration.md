@@ -20,4 +20,4 @@ codex app-server generate-json-schema --experimental --out "$OUT_DIR/codex-schem
 
 If Codex is missing at build time, a minimal fallback schema marker is written so the crate remains buildable.
 
-The `github_issue` dynamic tool is advertised. Full protocol-specific dynamic tool-call response handling should be verified against the active Codex app-server version before production use.
+The `github_issue` dynamic tool is advertised and handled through app-server `item/tool/call` server requests. Tool output is returned as `DynamicToolCallResponse` content items. Production deployments should pin and verify the active Codex CLI/app-server version because this protocol is still marked experimental upstream.

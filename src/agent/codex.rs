@@ -10,8 +10,10 @@ use tokio::time;
 use tracing::{debug, warn};
 
 use crate::agent::codex_protocol::{
-    ClientRequest, ServerMessage, extract_thread_id, extract_turn_id, github_issue_tool_spec,
+    ClientRequest, ClientResponse, ServerMessage, extract_thread_id, extract_turn_id,
+    github_issue_tool_spec,
 };
+use crate::agent::tools::github_issue;
 use crate::agent::{AgentRunOutcome, AgentRunRequest, AgentRunner, EventSink};
 use crate::error::{Result, SymphonyError};
 use crate::events::RuntimeEvent;
@@ -37,6 +39,7 @@ impl AgentRunner for CodexRunner {
                 Duration::from_millis(request.codex.read_timeout_ms),
                 &events,
                 &request.issue.id,
+                request.tracker.as_ref(),
             )
             .await?;
 
@@ -57,6 +60,7 @@ impl AgentRunner for CodexRunner {
                 Duration::from_millis(request.codex.read_timeout_ms),
                 &events,
                 &request.issue.id,
+                request.tracker.as_ref(),
             )
             .await?;
         let thread_id = extract_thread_id(&thread_result).ok_or_else(|| {
@@ -99,6 +103,7 @@ impl AgentRunner for CodexRunner {
                     Duration::from_millis(request.codex.read_timeout_ms),
                     &events,
                     &request.issue.id,
+                    request.tracker.as_ref(),
                 )
                 .await?;
             let turn_id = extract_turn_id(&turn_result).ok_or_else(|| {
@@ -117,6 +122,7 @@ impl AgentRunner for CodexRunner {
                         events: &events,
                         issue_id: &request.issue.id,
                         thread_id: &thread_id,
+                        tracker: request.tracker.as_ref(),
                     },
                     &mut outcome,
                 )
@@ -170,12 +176,21 @@ impl CodexSession {
         Ok(())
     }
 
+    async fn send_response(&mut self, response: ClientResponse) -> Result<()> {
+        let line = serde_json::to_string(&response)?;
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.write_all(b"\n").await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+
     async fn read_response(
         &mut self,
         id: u64,
         timeout: Duration,
         events: &EventSink,
         issue_id: &str,
+        tracker: Option<&std::sync::Arc<dyn crate::tracker::Tracker>>,
     ) -> Result<serde_json::Value> {
         let deadline = time::Instant::now() + timeout;
         loop {
@@ -201,7 +216,12 @@ impl CodexSession {
                 ));
             };
             let message = parse_message(&line, events, issue_id)?;
-            if message.id == Some(id) {
+            if message.method.is_some() && message.id.is_some() {
+                self.handle_server_request(message, events, issue_id, tracker)
+                    .await?;
+                continue;
+            }
+            if message.id.as_ref() == Some(&serde_json::Value::from(id)) {
                 if let Some(error) = message.error {
                     return Err(SymphonyError::agent(
                         "response_error",
@@ -248,6 +268,11 @@ impl CodexSession {
                 ));
             };
             let message = parse_message(&line, wait.events, wait.issue_id)?;
+            if message.method.is_some() && message.id.is_some() {
+                self.handle_server_request(message, wait.events, wait.issue_id, wait.tracker)
+                    .await?;
+                continue;
+            }
             if handle_notification(
                 message,
                 wait.events,
@@ -269,6 +294,103 @@ impl CodexSession {
             warn!(%error, "failed to stop codex app-server");
         }
     }
+
+    async fn handle_server_request(
+        &mut self,
+        message: ServerMessage,
+        events: &EventSink,
+        issue_id: &str,
+        tracker: Option<&std::sync::Arc<dyn crate::tracker::Tracker>>,
+    ) -> Result<()> {
+        let id = message
+            .id
+            .clone()
+            .ok_or_else(|| SymphonyError::agent("response_error", "server request missing id"))?;
+        let method = message.method.as_deref().unwrap_or_default();
+        let result = match method {
+            "item/tool/call" => {
+                self.handle_dynamic_tool_call(&message, events, issue_id, tracker)
+                    .await
+            }
+            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                events(RuntimeEvent::ApprovalAutoApproved {
+                    issue_id: issue_id.to_string(),
+                    at: Utc::now(),
+                });
+                serde_json::json!({ "decision": "acceptForSession" })
+            }
+            "item/tool/requestUserInput" => {
+                events(RuntimeEvent::TurnInputRequired {
+                    issue_id: issue_id.to_string(),
+                    at: Utc::now(),
+                });
+                serde_json::json!({ "answer": { "type": "cancel" } })
+            }
+            other => {
+                events(RuntimeEvent::UnsupportedToolCall {
+                    issue_id: issue_id.to_string(),
+                    tool_name: other.to_string(),
+                    at: Utc::now(),
+                });
+                serde_json::json!({})
+            }
+        };
+        self.send_response(ClientResponse::ok(id, result)).await
+    }
+
+    async fn handle_dynamic_tool_call(
+        &mut self,
+        message: &ServerMessage,
+        events: &EventSink,
+        issue_id: &str,
+        tracker: Option<&std::sync::Arc<dyn crate::tracker::Tracker>>,
+    ) -> serde_json::Value {
+        let tool = message
+            .params
+            .get("tool")
+            .and_then(serde_json::Value::as_str);
+        if tool != Some("github_issue") {
+            let tool_name = tool.unwrap_or("unknown").to_string();
+            events(RuntimeEvent::UnsupportedToolCall {
+                issue_id: issue_id.to_string(),
+                tool_name: tool_name.clone(),
+                at: Utc::now(),
+            });
+            return dynamic_tool_result(
+                false,
+                serde_json::json!({
+                    "error": {
+                        "code": "unsupported_tool_call",
+                        "message": format!("unsupported dynamic tool {tool_name:?}")
+                    }
+                }),
+            );
+        }
+        let Some(tracker) = tracker else {
+            return dynamic_tool_result(
+                false,
+                serde_json::json!({
+                    "error": {
+                        "code": "missing_tracker",
+                        "message": "github_issue tool requires an attached tracker"
+                    }
+                }),
+            );
+        };
+        let input = message.params.get("arguments").cloned().unwrap_or_default();
+        match github_issue::execute((*tracker).clone(), input).await {
+            Ok(value) => dynamic_tool_result(true, value),
+            Err(error) => dynamic_tool_result(
+                false,
+                serde_json::json!({
+                    "error": {
+                        "code": "github_issue_tool_failed",
+                        "message": error.to_string()
+                    }
+                }),
+            ),
+        }
+    }
 }
 
 struct TurnWait<'a> {
@@ -278,6 +400,19 @@ struct TurnWait<'a> {
     events: &'a EventSink,
     issue_id: &'a str,
     thread_id: &'a str,
+    tracker: Option<&'a std::sync::Arc<dyn crate::tracker::Tracker>>,
+}
+
+fn dynamic_tool_result(success: bool, payload: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "success": success,
+        "contentItems": [
+            {
+                "type": "inputText",
+                "text": payload.to_string()
+            }
+        ]
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]

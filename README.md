@@ -61,8 +61,8 @@ Implemented:
 
 Known v0.1 limitations:
 
-- Projects v2 write operations are explicitly rejected until field-option mutation lookup is added.
-- Codex dynamic `github_issue` tool advertisement is present, but protocol-specific tool-call response handling needs a real app-server integration pass.
+- Projects v2 reads and writes are implemented, but real Projects v2 validation depends on a configured organization project with matching status options.
+- Codex dynamic `github_issue` tool-call responses are implemented for the current app-server schema and covered by mock integration; production use should still be pinned to a tested Codex CLI version.
 - Runtime state is in memory, as allowed by the spec; restart recovery is tracker/filesystem driven.
 
 ## Verification

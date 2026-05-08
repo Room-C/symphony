@@ -22,7 +22,9 @@ GitHub issue state is represented by one `symphony:<state>` label. Priority is p
 
 Projects v2 reads organization project items and maps the configured single-select field, default `Status`, to Symphony issue state.
 
-v0.1 limitation: Projects v2 write operations return `unsupported_tracker_write` until field-option mutation lookup is implemented and tested.
+Projects v2 writes use `updateProjectV2ItemFieldValue` after looking up the configured status field and matching single-select option by name. Comment, close, and PR-link writes use the underlying issue repository via REST after resolving the project item content.
+
+Validation note: labels mode has been verified against the real `Room-C/symphony` repository. Projects v2 writes are covered at the code boundary and require a real organization project fixture before claiming production validation.
 
 ## Codex Trust Policy
 

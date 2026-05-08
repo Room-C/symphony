@@ -8,6 +8,25 @@ pub struct ClientRequest {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientResponse {
+    pub id: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+}
+
+impl ClientResponse {
+    pub fn ok(id: Value, result: Value) -> Self {
+        Self {
+            id,
+            result: Some(result),
+            error: None,
+        }
+    }
+}
+
 impl ClientRequest {
     pub fn initialize(id: u64) -> Self {
         Self {
@@ -72,7 +91,7 @@ impl ClientRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerMessage {
-    pub id: Option<u64>,
+    pub id: Option<Value>,
     pub result: Option<Value>,
     pub error: Option<JsonRpcError>,
     pub method: Option<String>,
