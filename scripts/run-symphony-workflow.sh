@@ -20,6 +20,10 @@ if [ -f "$env_file" ]; then
   set +a
 fi
 
+if [ -n "${SYMPHONY_CODEX:-}" ]; then
+  export PATH="$(dirname "$SYMPHONY_CODEX"):$PATH"
+fi
+
 gh_bin="${SYMPHONY_GH:-$(command -v gh || true)}"
 if [ -z "$gh_bin" ]; then
   echo "gh not found. Install GitHub CLI or set SYMPHONY_GH in $env_file." >&2
@@ -36,7 +40,14 @@ if [ -z "${GH_TOKEN:-}" ]; then
   export GH_TOKEN
 fi
 
-export RUST_LOG="${RUST_LOG:-symphony=info,info}"
+export RUST_LOG="${RUST_LOG:-symphony=info,codex_core_plugins=error,codex_core_skills=error,warn}"
+
+codex_bin="${SYMPHONY_CODEX:-$(command -v codex || true)}"
+if [ -z "$codex_bin" ]; then
+  echo "codex not found. Install Codex CLI or set SYMPHONY_CODEX in $env_file." >&2
+  exit 127
+fi
+export PATH="$(dirname "$codex_bin"):$PATH"
 
 cd "$repo_root"
 exec "$repo_root/target/release/symphony" run --workflow "$workflow"

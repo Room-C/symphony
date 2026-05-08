@@ -127,7 +127,9 @@ impl Orchestrator {
         let eligible = dispatch::eligible_issues(&guard, &workflow.config, candidates);
         drop(guard);
         for issue in eligible {
-            self.dispatch_issue(issue, None).await?;
+            if let Err(error) = self.dispatch_issue(issue, None).await {
+                warn!(%error, "issue dispatch failed; will retry on a later tick");
+            }
         }
         Ok(())
     }
@@ -178,6 +180,7 @@ impl Orchestrator {
                 .find(|issue| issue.id == retry.issue_id)
                 .cloned()
             {
+                self.state.write().await.claimed.remove(&retry.issue_id);
                 if self
                     .dispatch_issue(issue, Some(retry.attempt))
                     .await
@@ -191,8 +194,9 @@ impl Orchestrator {
         }
     }
 
-    pub async fn dispatch_issue(&self, issue: Issue, attempt: Option<u32>) -> Result<()> {
+    pub async fn dispatch_issue(&self, mut issue: Issue, attempt: Option<u32>) -> Result<()> {
         let workflow = self.workflow_store.snapshot().await;
+        let target_state = dispatch_claim_state(&workflow.config, &issue);
         {
             let mut state = self.state.write().await;
             if state.claimed.contains(&issue.id) || state.running.contains_key(&issue.id) {
@@ -224,6 +228,18 @@ impl Orchestrator {
                 },
             );
         }
+        if let Some(target_state) = target_state {
+            if let Err(error) = self.tracker.set_state(&issue.id, &target_state).await {
+                let mut state = self.state.write().await;
+                state.claimed.remove(&issue.id);
+                state.running.remove(&issue.id);
+                return Err(error);
+            }
+            issue.state = target_state.clone();
+            if let Some(live) = self.state.write().await.running.get_mut(&issue.id) {
+                live.issue.state = target_state;
+            }
+        }
         info!(issue_id = %issue.id, issue = %issue.identifier, "dispatching issue");
 
         let state = self.state.clone();
@@ -237,7 +253,6 @@ impl Orchestrator {
                 attempt,
                 tracker,
                 agent,
-                state.clone(),
                 events.clone(),
             )
             .await;
@@ -252,13 +267,24 @@ impl Orchestrator {
     }
 }
 
+fn dispatch_claim_state(config: &crate::config::Config, issue: &Issue) -> Option<String> {
+    if issue.state.eq_ignore_ascii_case("in progress") {
+        return None;
+    }
+    config
+        .tracker
+        .active_states
+        .iter()
+        .find(|state| state.eq_ignore_ascii_case("in progress"))
+        .cloned()
+}
+
 async fn run_worker_attempt(
     workflow: crate::workflow::Workflow,
     issue: Issue,
     attempt: Option<u32>,
     tracker: Arc<dyn Tracker>,
     agent: Arc<dyn AgentRunner>,
-    state: Arc<RwLock<OrchestratorState>>,
     events: EventSink,
 ) -> Result<crate::agent::AgentRunOutcome> {
     let manager = WorkspaceManager::new(
@@ -284,22 +310,6 @@ async fn run_worker_attempt(
     };
     let outcome = agent.run(request, events).await;
     manager.after_run_best_effort(&workspace).await;
-    if let Ok(outcome) = &outcome
-        && let Some(thread_id) = &outcome.thread_id
-    {
-        let mut guard = state.write().await;
-        if let Some(live) = guard.running.get_mut(&issue.id) {
-            live.thread_id = Some(thread_id.clone());
-            live.session_id = outcome
-                .last_turn_id
-                .as_ref()
-                .map(|turn_id| format!("{thread_id}-{turn_id}"));
-            live.turn_count = outcome.turn_count;
-            live.codex_input_tokens = outcome.input_tokens;
-            live.codex_output_tokens = outcome.output_tokens;
-            live.codex_total_tokens = outcome.total_tokens;
-        }
-    }
     let refreshed = tracker
         .fetch_issue_states_by_ids(std::slice::from_ref(&issue.id))
         .await?;
@@ -322,10 +332,22 @@ async fn on_worker_exit(
         .to_std()
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
+    let (input_tokens, output_tokens, total_tokens) = match &result {
+        Ok(outcome) => (
+            outcome.input_tokens,
+            outcome.output_tokens,
+            outcome.total_tokens,
+        ),
+        Err(_) => (
+            live.codex_input_tokens,
+            live.codex_output_tokens,
+            live.codex_total_tokens,
+        ),
+    };
     guard.codex_totals = CodexTotals {
-        input_tokens: guard.codex_totals.input_tokens + live.codex_input_tokens,
-        output_tokens: guard.codex_totals.output_tokens + live.codex_output_tokens,
-        total_tokens: guard.codex_totals.total_tokens + live.codex_total_tokens,
+        input_tokens: guard.codex_totals.input_tokens + input_tokens,
+        output_tokens: guard.codex_totals.output_tokens + output_tokens,
+        total_tokens: guard.codex_totals.total_tokens + total_tokens,
         seconds_running: guard.codex_totals.seconds_running + elapsed,
     };
     match result {
@@ -374,5 +396,311 @@ fn make_retry_entry(
         due_at: Utc::now() + TimeDelta::milliseconds(delay_ms.min(i64::MAX as u64) as i64),
         delay_ms,
         error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use chrono::Utc;
+
+    use super::*;
+    use crate::agent::AgentRunOutcome;
+    use crate::tracker::Tracker;
+
+    #[tokio::test]
+    async fn dispatch_transitions_todo_issue_to_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspaces");
+        let workflow_path = dir.path().join("WORKFLOW.md");
+        std::fs::write(
+            &workflow_path,
+            format!(
+                r#"---
+tracker:
+  kind: github
+  mode: labels
+  owner: Room-C
+  repo: symphony
+  api_key: token
+  active_states: [Todo, "In Progress", Rework]
+workspace:
+  root: {}
+---
+Handle {{{{ issue.identifier }}}}.
+"#,
+                workspace_root.display()
+            ),
+        )
+        .unwrap();
+
+        let issue = issue("I_1", "Todo");
+        let state_calls = Arc::new(Mutex::new(Vec::new()));
+        let tracker = Arc::new(StateRecordingTracker {
+            issue: issue.clone(),
+            state_calls: state_calls.clone(),
+            fail_set_state: false,
+        });
+        let agent = Arc::new(RecordingAgent::default());
+        let orchestrator =
+            Orchestrator::new(WorkflowStore::load(&workflow_path).unwrap(), tracker, agent);
+
+        orchestrator.dispatch_issue(issue, None).await.unwrap();
+
+        assert_eq!(
+            state_calls.lock().unwrap().as_slice(),
+            &[("I_1".to_string(), "In Progress".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_releases_claim_when_in_progress_transition_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspaces");
+        let workflow_path = dir.path().join("WORKFLOW.md");
+        std::fs::write(
+            &workflow_path,
+            format!(
+                r#"---
+tracker:
+  kind: github
+  mode: labels
+  owner: Room-C
+  repo: symphony
+  api_key: token
+  active_states: [Todo, "In Progress", Rework]
+workspace:
+  root: {}
+---
+Handle {{{{ issue.identifier }}}}.
+"#,
+                workspace_root.display()
+            ),
+        )
+        .unwrap();
+
+        let issue = issue("I_1", "Todo");
+        let tracker = Arc::new(StateRecordingTracker {
+            issue: issue.clone(),
+            state_calls: Arc::new(Mutex::new(Vec::new())),
+            fail_set_state: true,
+        });
+        let agent = Arc::new(RecordingAgent::default());
+        let orchestrator = Orchestrator::new(
+            WorkflowStore::load(&workflow_path).unwrap(),
+            tracker,
+            agent.clone(),
+        );
+
+        let result = orchestrator.dispatch_issue(issue.clone(), None).await;
+
+        assert!(result.is_err());
+        let state = orchestrator.state();
+        let state = state.read().await;
+        assert!(!state.claimed.contains(&issue.id));
+        assert!(!state.running.contains_key(&issue.id));
+        assert!(agent.attempts.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn due_retry_releases_claim_before_redispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_root = dir.path().join("workspaces");
+        let workflow_path = dir.path().join("WORKFLOW.md");
+        std::fs::write(
+            &workflow_path,
+            format!(
+                r#"---
+tracker:
+  kind: github
+  mode: labels
+  owner: Room-C
+  repo: symphony
+  api_key: token
+workspace:
+  root: {}
+---
+Handle {{{{ issue.identifier }}}}.
+"#,
+                workspace_root.display()
+            ),
+        )
+        .unwrap();
+
+        let issue = issue("I_1", "Todo");
+        let tracker = Arc::new(StaticTracker {
+            issue: issue.clone(),
+        });
+        let agent = Arc::new(RecordingAgent::default());
+        let orchestrator = Orchestrator::new(
+            WorkflowStore::load(&workflow_path).unwrap(),
+            tracker,
+            agent.clone(),
+        );
+
+        {
+            let state = orchestrator.state();
+            let mut state = state.write().await;
+            state.claimed.insert(issue.id.clone());
+            state.retry_attempts.insert(
+                issue.id.clone(),
+                RetryEntry {
+                    issue_id: issue.id.clone(),
+                    identifier: issue.identifier.clone(),
+                    attempt: 2,
+                    due_at: Utc::now() - TimeDelta::milliseconds(1),
+                    delay_ms: 1,
+                    error: Some("previous attempt failed".to_string()),
+                },
+            );
+        }
+
+        orchestrator.dispatch_due_retries().await;
+
+        for _ in 0..20 {
+            if !agent.attempts.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(agent.attempts.lock().unwrap().as_slice(), &[Some(2)]);
+    }
+
+    #[derive(Clone)]
+    struct StateRecordingTracker {
+        issue: Issue,
+        state_calls: Arc<Mutex<Vec<(String, String)>>>,
+        fail_set_state: bool,
+    }
+
+    #[async_trait]
+    impl Tracker for StateRecordingTracker {
+        async fn fetch_candidate_issues(&self) -> Result<Vec<Issue>> {
+            Ok(vec![self.issue.clone()])
+        }
+
+        async fn fetch_issues_by_states(&self, _states: &[String]) -> Result<Vec<Issue>> {
+            Ok(vec![self.issue.clone()])
+        }
+
+        async fn fetch_issue_states_by_ids(
+            &self,
+            ids: &[String],
+        ) -> Result<HashMap<String, String>> {
+            Ok(ids
+                .iter()
+                .map(|id| (id.clone(), self.issue.state.clone()))
+                .collect())
+        }
+
+        async fn comment(&self, _issue_id: &str, _body: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn set_state(&self, issue_id: &str, state: &str) -> Result<()> {
+            self.state_calls
+                .lock()
+                .unwrap()
+                .push((issue_id.to_string(), state.to_string()));
+            if self.fail_set_state {
+                return Err(SymphonyError::tracker(
+                    "set_state_failed",
+                    "state update failed",
+                ));
+            }
+            Ok(())
+        }
+
+        async fn close(&self, _issue_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn link_pr(&self, _issue_id: &str, _pr_number: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct StaticTracker {
+        issue: Issue,
+    }
+
+    #[async_trait]
+    impl Tracker for StaticTracker {
+        async fn fetch_candidate_issues(&self) -> Result<Vec<Issue>> {
+            Ok(vec![self.issue.clone()])
+        }
+
+        async fn fetch_issues_by_states(&self, _states: &[String]) -> Result<Vec<Issue>> {
+            Ok(vec![self.issue.clone()])
+        }
+
+        async fn fetch_issue_states_by_ids(
+            &self,
+            ids: &[String],
+        ) -> Result<HashMap<String, String>> {
+            Ok(ids
+                .iter()
+                .map(|id| (id.clone(), self.issue.state.clone()))
+                .collect())
+        }
+
+        async fn comment(&self, _issue_id: &str, _body: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn set_state(&self, _issue_id: &str, _state: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn close(&self, _issue_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn link_pr(&self, _issue_id: &str, _pr_number: u64) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingAgent {
+        attempts: Mutex<Vec<Option<u32>>>,
+    }
+
+    #[async_trait]
+    impl AgentRunner for RecordingAgent {
+        async fn run(
+            &self,
+            request: AgentRunRequest,
+            _events: EventSink,
+        ) -> Result<AgentRunOutcome> {
+            self.attempts.lock().unwrap().push(request.attempt);
+            Ok(AgentRunOutcome {
+                normal: true,
+                turn_count: 1,
+                ..AgentRunOutcome::default()
+            })
+        }
+    }
+
+    fn issue(id: &str, state: &str) -> Issue {
+        Issue {
+            id: id.to_string(),
+            identifier: "Room-C/symphony#1".to_string(),
+            title: "Retry it".to_string(),
+            state: state.to_string(),
+            description: Some("body".to_string()),
+            priority: None,
+            branch_name: None,
+            url: "https://github.com/Room-C/symphony/issues/1".to_string(),
+            labels: vec![],
+            blocked_by: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
     }
 }

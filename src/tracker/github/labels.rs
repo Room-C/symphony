@@ -12,8 +12,8 @@ use crate::events::Issue;
 use crate::tracker::Tracker;
 
 use super::{
-    GithubLabel, parse_blocked_by, parse_priority, state_from_labels, state_to_label,
-    visible_labels,
+    GithubLabel, format_request_error, parse_blocked_by, parse_priority, state_from_labels,
+    state_to_label, visible_labels,
 };
 
 #[derive(Debug, Clone)]
@@ -59,7 +59,9 @@ impl GithubLabelsTracker {
             .header("User-Agent", "Room-C-Symphony")
             .send()
             .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))?;
+            .map_err(|error| {
+                SymphonyError::tracker("github_api_request", format_request_error(&error))
+            })?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -68,10 +70,9 @@ impl GithubLabelsTracker {
                 format!("GitHub returned {status}: {body}"),
             ));
         }
-        response
-            .json::<T>()
-            .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))
+        response.json::<T>().await.map_err(|error| {
+            SymphonyError::tracker("github_api_request", format_request_error(&error))
+        })
     }
 
     async fn request_empty(
@@ -86,7 +87,9 @@ impl GithubLabelsTracker {
             .header("User-Agent", "Room-C-Symphony")
             .send()
             .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))?;
+            .map_err(|error| {
+                SymphonyError::tracker("github_api_request", format_request_error(&error))
+            })?;
         let status = response.status();
         if !ok.contains(&status) {
             let body = response.text().await.unwrap_or_default();

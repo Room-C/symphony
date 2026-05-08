@@ -31,11 +31,12 @@ Validation note: labels mode has been verified against the real `Room-C/symphony
 Default policy:
 
 - `approval_policy: never`
-- `thread_sandbox: workspace-write`
+- `thread_sandbox: danger-full-access`
+- `turn_sandbox_policy: danger-full-access`
 - user-input-required is treated as run failure
 - unsupported dynamic tools return failure instead of blocking the run
 
-This is a high-trust local daemon posture. Operators should run it only where automatic workspace-scoped changes are acceptable.
+This is a high-trust local daemon posture. Operators should run it only where automatic Git metadata writes, branch pushes, and PR creation are acceptable.
 
 ## Retry Formula
 

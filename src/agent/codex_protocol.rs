@@ -61,7 +61,7 @@ impl ClientRequest {
                 "sandbox": sandbox,
                 "dynamicTools": dynamic_tools,
                 "threadSource": "user",
-                "sessionStartSource": "new",
+                "sessionStartSource": "startup",
                 "ephemeral": false
             }),
         }
@@ -73,6 +73,7 @@ impl ClientRequest {
         cwd: &str,
         prompt: &str,
         approval_policy: &str,
+        sandbox_policy: &str,
     ) -> Self {
         Self {
             id,
@@ -81,6 +82,7 @@ impl ClientRequest {
                 "threadId": thread_id,
                 "cwd": cwd,
                 "approvalPolicy": approval_policy,
+                "sandboxPolicy": sandbox_policy_value(sandbox_policy),
                 "input": [
                     { "type": "text", "text": prompt }
                 ]
@@ -138,4 +140,43 @@ pub fn github_issue_tool_spec() -> Value {
             "additionalProperties": false
         }
     })
+}
+
+fn sandbox_policy_value(policy: &str) -> Value {
+    match policy {
+        "danger-full-access" | "dangerFullAccess" => json!({ "type": "dangerFullAccess" }),
+        "read-only" | "readOnly" => json!({ "type": "readOnly" }),
+        "workspace-write" | "workspaceWrite" => json!({ "type": "workspaceWrite" }),
+        "external-sandbox" | "externalSandbox" => json!({ "type": "externalSandbox" }),
+        other => json!(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientRequest;
+
+    #[test]
+    fn thread_start_uses_current_codex_session_start_source() {
+        let request =
+            ClientRequest::thread_start(1, "/tmp/work", "never", "workspace-write", vec![]);
+
+        assert_eq!(request.method, "thread/start");
+        assert_eq!(request.params["sessionStartSource"], "startup");
+    }
+
+    #[test]
+    fn turn_start_maps_sandbox_policy_for_current_codex_schema() {
+        let request = ClientRequest::turn_start(
+            2,
+            "thread-1",
+            "/tmp/work",
+            "finish",
+            "never",
+            "danger-full-access",
+        );
+
+        assert_eq!(request.method, "turn/start");
+        assert_eq!(request.params["sandboxPolicy"]["type"], "dangerFullAccess");
+    }
 }

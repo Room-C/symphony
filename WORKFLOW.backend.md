@@ -26,9 +26,9 @@ agent:
 codex:
   command: codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy: workspace-write
-  read_timeout_ms: 5000
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
+  read_timeout_ms: 30000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 observability:
@@ -38,7 +38,7 @@ observability:
 You are working on GitHub issue `{{ issue.identifier }}` in `Room-C/PactPilot-Backend`.
 
 {% if attempt %}
-Continue the previous unfinished run, attempt #{{ attempt }}. Use the current workspace state and move directly toward completion.
+Continue the previous unfinished run, attempt #{{ attempt }}. First inspect `git status --short`, existing plan/tracking docs, and recent verification notes. Do not restart implementation if code and verification are already ready. Finish the remaining workflow steps: create or update the branch, commit and push the changes, open a PR, comment on the issue with summary, verification, and PR URL, then move the issue to Human Review. If an external operation fails, leave the workspace state intact and comment on the issue with the precise blocker when possible.
 {% else %}
 Title: {{ issue.title }}
 State: {{ issue.state }}

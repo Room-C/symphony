@@ -59,3 +59,25 @@ tracker:
     .unwrap_err();
     assert!(err.to_string().contains("prompt body is empty"));
 }
+
+#[test]
+fn rejects_invalid_codex_sandbox_values() {
+    let err = Workflow::parse(
+        "WORKFLOW.md",
+        r#"---
+tracker:
+  kind: github
+  mode: labels
+  owner: Room-C
+  repo: symphony
+  api_key: token
+codex:
+  thread_sandbox: not-a-sandbox
+---
+Handle it.
+"#,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("invalid_sandbox_mode"));
+}

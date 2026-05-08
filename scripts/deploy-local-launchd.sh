@@ -19,13 +19,13 @@ SERVICES
 
 label_records() {
   cat <<'LABELS'
-symphony:todo|0969DA|Ready for Symphony
+symphony:todo|BFD4F2|Ready for Symphony
 symphony:in-progress|1D76DB|Currently handled by Symphony
 symphony:rework|FBCA04|Needs another Symphony pass
 symphony:human-review|8957E5|Waiting for human review
-symphony:done|1F883D|Completed by Symphony
-symphony:closed|BFDADC|Closed
-symphony:cancelled|D93F0B|Cancelled
+symphony:done|0E8A16|Completed by Symphony
+symphony:closed|CFD3D7|Closed
+symphony:cancelled|5C5C5C|Cancelled
 priority:1|B60205|Highest priority
 priority:2|D93F0B|High priority
 priority:3|FBCA04|Normal priority
@@ -52,6 +52,7 @@ Commands:
 Optional environment:
   SYMPHONY_ENV_FILE     File sourced by the runner before startup. Defaults to ~/.config/symphony/env.
   SYMPHONY_GH           Absolute path to gh if it is not on PATH.
+  SYMPHONY_CODEX        Absolute path to codex if it is not on launchd PATH.
 
 Example:
   scripts/deploy-local-launchd.sh install --sync-labels
@@ -90,6 +91,10 @@ xml_escape() {
 }
 
 plist_path_for_label() {
+  printf '%s/%s.plist\n' "$launch_agents_dir" "$1"
+}
+
+legacy_plist_path_for_label() {
   printf '%s/com.roomc.%s.plist\n' "$launch_agents_dir" "$1"
 }
 
@@ -104,6 +109,7 @@ ensure_prerequisites() {
   gh_path="$(gh_bin)"
   [ -n "$gh_path" ] || die "gh is required but was not found on PATH"
   [ -x "$gh_path" ] || die "gh exists but is not executable: $gh_path"
+  command -v codex >/dev/null 2>&1 || die "codex is required but was not found on PATH"
 
   "$gh_path" auth token >/dev/null
   codex app-server --help >/dev/null
@@ -132,9 +138,10 @@ write_plist() {
   local label="$2"
   local workflow="$3"
   local plist="$4"
-  local gh_path path_value
+  local codex_path gh_path path_value
 
   gh_path="$(gh_bin)"
+  codex_path="$(command -v codex)"
   path_value="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
   cat >"$plist" <<EOF
@@ -158,8 +165,10 @@ write_plist() {
     <string>$(xml_escape "$path_value")</string>
     <key>SYMPHONY_GH</key>
     <string>$(xml_escape "$gh_path")</string>
+    <key>SYMPHONY_CODEX</key>
+    <string>$(xml_escape "$codex_path")</string>
     <key>RUST_LOG</key>
-    <string>symphony=info,info</string>
+    <string>symphony=info,codex_core_plugins=error,codex_core_skills=error,warn</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -175,24 +184,31 @@ EOF
 }
 
 install_plists() {
-  local name label workflow repo plist
+  local legacy name label workflow repo plist
   mkdir -p "$launch_agents_dir" "$log_dir"
 
   while IFS='|' read -r name label workflow repo; do
     [ -n "$name" ] || continue
     plist="$(plist_path_for_label "$label")"
+    legacy="$(legacy_plist_path_for_label "$label")"
+    if [ "$legacy" != "$plist" ] && [ -f "$legacy" ]; then
+      echo "==> Removing legacy $legacy"
+      rm -f "$legacy"
+    fi
     echo "==> Writing $plist"
     write_plist "$name" "$label" "$workflow" "$plist"
   done < <(service_records)
 }
 
 stop_services() {
-  local name label workflow repo plist
+  local legacy name label workflow repo plist
   while IFS='|' read -r name label workflow repo; do
     [ -n "$name" ] || continue
     plist="$(plist_path_for_label "$label")"
+    legacy="$(legacy_plist_path_for_label "$label")"
     echo "==> Stopping $label"
     launchctl bootout "$launch_domain" "$plist" >/dev/null 2>&1 || true
+    launchctl bootout "$launch_domain" "$legacy" >/dev/null 2>&1 || true
   done < <(service_records)
 }
 
@@ -223,13 +239,18 @@ status_services() {
 }
 
 remove_plists() {
-  local name label workflow repo plist
+  local legacy name label workflow repo plist
   while IFS='|' read -r name label workflow repo; do
     [ -n "$name" ] || continue
     plist="$(plist_path_for_label "$label")"
+    legacy="$(legacy_plist_path_for_label "$label")"
     if [ -f "$plist" ]; then
       echo "==> Removing $plist"
       rm -f "$plist"
+    fi
+    if [ -f "$legacy" ]; then
+      echo "==> Removing legacy $legacy"
+      rm -f "$legacy"
     fi
   done < <(service_records)
 }
@@ -273,8 +294,8 @@ run_check() {
 install_all() {
   local should_sync_labels="$1"
   run_check
-  install_plists
   stop_services
+  install_plists
   start_services
   if [ "$should_sync_labels" = "1" ]; then
     sync_labels

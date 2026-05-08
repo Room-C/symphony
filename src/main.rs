@@ -61,6 +61,9 @@ async fn main() -> anyhow::Result<()> {
             let orchestrator = Orchestrator::new(store, tracker, Arc::new(CodexRunner));
             let bind = http_bind.unwrap_or(snapshot.config.observability.http_bind);
             let http_state = orchestrator.state();
+            let orchestrator = orchestrator.with_events(
+                symphony::orchestrator::state::live_event_sink(http_state.clone()),
+            );
             tokio::spawn(async move {
                 if let Err(error) = observability::http::serve(&bind, http_state).await {
                     tracing::error!(%error, "http status server failed");

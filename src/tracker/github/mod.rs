@@ -1,6 +1,8 @@
 pub mod labels;
 pub mod projects_v2;
 
+use std::error::Error as _;
+
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,4 +59,15 @@ pub fn parse_blocked_by(body: Option<&str>, owner: &str, repo: &str) -> Vec<Stri
             Some(format!("{cap_owner}/{cap_repo}#{number}"))
         })
         .collect()
+}
+
+fn format_request_error(error: &reqwest::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        source = error.source();
+    }
+    message
 }

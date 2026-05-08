@@ -9,6 +9,8 @@ use crate::error::{Result, SymphonyError};
 use crate::events::Issue;
 use crate::tracker::Tracker;
 
+use super::format_request_error;
+
 #[derive(Debug, Clone)]
 pub struct GithubProjectsV2Tracker {
     client: reqwest::Client,
@@ -54,12 +56,13 @@ impl GithubProjectsV2Tracker {
             .json(&json!({ "query": query, "variables": variables }))
             .send()
             .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))?;
+            .map_err(|error| {
+                SymphonyError::tracker("github_api_request", format_request_error(&error))
+            })?;
         let status = response.status();
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))?;
+        let body: Value = response.json().await.map_err(|error| {
+            SymphonyError::tracker("github_api_request", format_request_error(&error))
+        })?;
         if !status.is_success() {
             return Err(SymphonyError::tracker(
                 "github_api_status",
@@ -83,7 +86,9 @@ impl GithubProjectsV2Tracker {
             .header("User-Agent", "Room-C-Symphony")
             .send()
             .await
-            .map_err(|error| SymphonyError::tracker("github_api_request", error.to_string()))?;
+            .map_err(|error| {
+                SymphonyError::tracker("github_api_request", format_request_error(&error))
+            })?;
         let status = response.status();
         if !ok.contains(&status) {
             let body = response.text().await.unwrap_or_default();

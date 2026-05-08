@@ -95,6 +95,7 @@ impl AgentRunner for CodexRunner {
                     &cwd,
                     prompt,
                     &request.codex.approval_policy,
+                    &request.codex.turn_sandbox_policy,
                 ))
                 .await?;
             let turn_result = session

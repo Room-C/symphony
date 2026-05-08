@@ -84,6 +84,8 @@ impl Config {
                 "tracker.active_states must not be empty",
             ));
         }
+        validate_sandbox_mode("codex.thread_sandbox", &self.codex.thread_sandbox)?;
+        validate_sandbox_policy("codex.turn_sandbox_policy", &self.codex.turn_sandbox_policy)?;
         Ok(())
     }
 
@@ -276,6 +278,28 @@ fn require_field(name: &'static str, value: Option<&str>) -> Result<()> {
         ))
     } else {
         Ok(())
+    }
+}
+
+fn validate_sandbox_mode(name: &'static str, value: &str) -> Result<()> {
+    match value {
+        "read-only" | "workspace-write" | "danger-full-access" => Ok(()),
+        _ => Err(SymphonyError::config(
+            "invalid_sandbox_mode",
+            format!("{name} must be one of read-only, workspace-write, or danger-full-access"),
+        )),
+    }
+}
+
+fn validate_sandbox_policy(name: &'static str, value: &str) -> Result<()> {
+    match value {
+        "read-only" | "workspace-write" | "danger-full-access" | "external-sandbox" => Ok(()),
+        _ => Err(SymphonyError::config(
+            "invalid_sandbox_policy",
+            format!(
+                "{name} must be one of read-only, workspace-write, danger-full-access, or external-sandbox"
+            ),
+        )),
     }
 }
 

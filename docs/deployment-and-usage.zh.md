@@ -106,28 +106,28 @@ labels 模式是当前最简单、验证最充分的接入方式。Issue 是否�
 
 Symphony 不会自动创建 GitHub labels。首次接入某个仓库时，需要手动初始化这些 label；如果 label 已经存在，只需要用 `gh label edit` 更新颜色或描述。
 
-建议创建这些状态 label：
+建议创建这些状态 label。配色按 GitHub 原生 issue 配色规范设计，遵循"明度递进"语义：浅色表示待领取，饱和色表示进行中，灰色表示终态。
 
 ```bash
-gh label create "symphony:todo" --color "0969DA" --description "Ready for Symphony"
+gh label create "symphony:todo" --color "BFD4F2" --description "Ready for Symphony"
 gh label create "symphony:in-progress" --color "1D76DB" --description "Currently handled by Symphony"
 gh label create "symphony:rework" --color "FBCA04" --description "Needs another Symphony pass"
 gh label create "symphony:human-review" --color "8957E5" --description "Waiting for human review"
-gh label create "symphony:done" --color "1F883D" --description "Completed by Symphony"
-gh label create "symphony:closed" --color "BFDADC" --description "Closed"
-gh label create "symphony:cancelled" --color "D93F0B" --description "Cancelled"
+gh label create "symphony:done" --color "0E8A16" --description "Completed by Symphony"
+gh label create "symphony:closed" --color "CFD3D7" --description "Closed"
+gh label create "symphony:cancelled" --color "5C5C5C" --description "Cancelled"
 ```
 
 如果这些 label 已经存在，用下面命令同步推荐配色：
 
 ```bash
-gh label edit "symphony:todo" --color "0969DA" --description "Ready for Symphony"
+gh label edit "symphony:todo" --color "BFD4F2" --description "Ready for Symphony"
 gh label edit "symphony:in-progress" --color "1D76DB" --description "Currently handled by Symphony"
 gh label edit "symphony:rework" --color "FBCA04" --description "Needs another Symphony pass"
 gh label edit "symphony:human-review" --color "8957E5" --description "Waiting for human review"
-gh label edit "symphony:done" --color "1F883D" --description "Completed by Symphony"
-gh label edit "symphony:closed" --color "BFDADC" --description "Closed"
-gh label edit "symphony:cancelled" --color "D93F0B" --description "Cancelled"
+gh label edit "symphony:done" --color "0E8A16" --description "Completed by Symphony"
+gh label edit "symphony:closed" --color "CFD3D7" --description "Closed"
+gh label edit "symphony:cancelled" --color "5C5C5C" --description "Cancelled"
 ```
 
 优先级 label 可选：
@@ -170,8 +170,9 @@ agent:
 codex:
   command: codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy: workspace-write
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
+  read_timeout_ms: 30000
 
 observability:
   http_bind: 127.0.0.1:8723
@@ -340,7 +341,7 @@ workspace:
 ```bash
 export GITHUB_TOKEN="<your-token>"
 export GH_TOKEN="$GITHUB_TOKEN"
-export RUST_LOG="symphony=info,info"
+export RUST_LOG="symphony=info,codex_core_plugins=error,codex_core_skills=error,warn"
 
 ./target/release/symphony run \
   --workflow WORKFLOW.md \
@@ -388,7 +389,7 @@ sudo chown -R symphony:symphony /opt/symphony /var/lib/symphony
 ```bash
 GITHUB_TOKEN=replace_me
 GH_TOKEN=replace_me
-RUST_LOG=symphony=info,info
+RUST_LOG=symphony=info,codex_core_plugins=error,codex_core_skills=error,warn
 ```
 
 权限：
@@ -465,7 +466,11 @@ scripts/deploy-local-launchd.sh uninstall
 scripts/deploy-local-launchd.sh install
 ```
 
-启动脚本不会把 token 写进 plist。每次服务启动时，它会通过 `gh auth token` 动态读取 token，并导出 `GITHUB_TOKEN` 和 `GH_TOKEN`。如果你需要配置代理或自定义 `gh` 路径，可以创建：
+启动脚本不会把 token 写进 plist。每次服务启动时，它会通过 `gh auth token` 动态读取 token，并导出 `GITHUB_TOKEN` 和 `GH_TOKEN`。部署脚本会把当前 `gh` 和 `codex` 的绝对路径写入 plist，避免 launchd 的默认 PATH 找不到命令。
+
+默认 `RUST_LOG` 是 `symphony=info,codex_core_plugins=error,codex_core_skills=error,warn`：Symphony 自身保留 info 级别日志，其他 Rust 组件只记录 warn 以上，并压低 Codex plugin/skill manifest 的重复 warning，避免 app-server stderr 长期灌满 launchd 日志。
+
+如果你需要配置代理，或手动指定 `gh` / `codex` 路径，可以创建：
 
 ```bash
 mkdir -p ~/.config/symphony
@@ -473,7 +478,14 @@ cat > ~/.config/symphony/env <<'EOF'
 HTTPS_PROXY=http://127.0.0.1:7890
 HTTP_PROXY=http://127.0.0.1:7890
 SYMPHONY_GH=/opt/homebrew/bin/gh
+SYMPHONY_CODEX=/Users/bob/.nvm/versions/node/v24.14.0/bin/codex
 EOF
+```
+
+如果你的 shell 配置了全局代理，访问本机 status API 时建议绕过代理：
+
+```bash
+curl --noproxy '*' -sS http://127.0.0.1:8725/api/v1/state
 ```
 
 `~/Library/LaunchAgents/com.roomc.symphony.plist`：
@@ -504,7 +516,7 @@ EOF
     <key>GH_TOKEN</key>
     <string>replace_me</string>
     <key>RUST_LOG</key>
-    <string>symphony=info,info</string>
+    <string>symphony=info,codex_core_plugins=error,codex_core_skills=error,warn</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -575,6 +587,10 @@ Agent 正常完成后，Issue 上应该出现：
 - 新状态，例如 `symphony:human-review` 或 `symphony:done`。
 
 如果任务失败，Issue 上应该出现失败说明。daemon 会根据 retry 策略进行退避重试，直到达到上限或 Issue 进入非 active 状态。
+
+daemon 在派发 Issue 前会先把 `symphony:todo` 或 `symphony:rework` 切到 `symphony:in-progress`。如果状态切换失败，daemon 会释放本地 claim，不启动 agent，并在下一轮轮询时重试。
+
+如果 prompt 要求 agent 创建分支、提交、推送或打开 PR，本地可信 daemon 应使用 `danger-full-access`。`workspace-write` 只能可靠修改工作区文件，可能无法写入 `.git/index.lock` 或 `.git/refs/*`，从而卡在 PR 收尾阶段。
 
 ### 11.4 人工 review
 
@@ -649,9 +665,9 @@ agent:
 codex:
   command: codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy: workspace-write
-  read_timeout_ms: 5000
+  thread_sandbox: danger-full-access
+  turn_sandbox_policy: danger-full-access
+  read_timeout_ms: 30000
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 ```
