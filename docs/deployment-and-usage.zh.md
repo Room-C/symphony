@@ -104,16 +104,30 @@ cargo run -- run --workflow WORKFLOW.md --http-bind 127.0.0.1:8723
 
 labels 模式是当前最简单、验证最充分的接入方式。Issue 是否可执行由 label 决定。
 
+Symphony 不会自动创建 GitHub labels。首次接入某个仓库时，需要手动初始化这些 label；如果 label 已经存在，只需要用 `gh label edit` 更新颜色或描述。
+
 建议创建这些状态 label：
 
 ```bash
-gh label create "symphony:todo" --color "0E8A16" --description "Ready for Symphony"
+gh label create "symphony:todo" --color "0969DA" --description "Ready for Symphony"
 gh label create "symphony:in-progress" --color "1D76DB" --description "Currently handled by Symphony"
 gh label create "symphony:rework" --color "FBCA04" --description "Needs another Symphony pass"
-gh label create "symphony:human-review" --color "5319E7" --description "Waiting for human review"
-gh label create "symphony:done" --color "0E8A16" --description "Completed by Symphony"
+gh label create "symphony:human-review" --color "8957E5" --description "Waiting for human review"
+gh label create "symphony:done" --color "1F883D" --description "Completed by Symphony"
 gh label create "symphony:closed" --color "BFDADC" --description "Closed"
 gh label create "symphony:cancelled" --color "D93F0B" --description "Cancelled"
+```
+
+如果这些 label 已经存在，用下面命令同步推荐配色：
+
+```bash
+gh label edit "symphony:todo" --color "0969DA" --description "Ready for Symphony"
+gh label edit "symphony:in-progress" --color "1D76DB" --description "Currently handled by Symphony"
+gh label edit "symphony:rework" --color "FBCA04" --description "Needs another Symphony pass"
+gh label edit "symphony:human-review" --color "8957E5" --description "Waiting for human review"
+gh label edit "symphony:done" --color "1F883D" --description "Completed by Symphony"
+gh label edit "symphony:closed" --color "BFDADC" --description "Closed"
+gh label edit "symphony:cancelled" --color "D93F0B" --description "Cancelled"
 ```
 
 优先级 label 可选：
